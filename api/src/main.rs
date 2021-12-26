@@ -10,18 +10,26 @@ use warp::{
 
 static MAX_SIZE: u64 = 100_000_000; // 100 MB
 
+
 #[tokio::main]
 async fn main() {
+    let cors = warp::cors()
+        .allow_any_origin()
+        .allow_methods(vec!["POST", "GET"]);
+
     let upload_route = warp::path("upload")
         .and(warp::post())
         .and(warp::multipart::form().max_length(MAX_SIZE))
-        .and_then(upload);
+        .and_then(upload)
+        .with(cors.clone());
 
     let download_route = warp::path("files")
-        .and(warp::fs::dir("./files/"));
+        .and(warp::fs::dir("../files/"))
+        .with(cors.clone());
 
     let router = upload_route.or(download_route).recover(handle_rejection);
-    println!("Server started at localhost:8080");
+
+    println!("Server started at http://localhost:8080");
     warp::serve(router).run(([0, 0, 0, 0], 8080)).await;
 }
 
@@ -30,6 +38,8 @@ async fn upload(form: FormData) -> Result<impl Reply, Rejection> {
         eprintln!("form error: {}", e);
         warp::reject::reject()
     })?;
+
+    let mut file = "".to_string();
 
     for part in parts {
         if part.name() == "file" {
@@ -61,31 +71,33 @@ async fn upload(form: FormData) -> Result<impl Reply, Rejection> {
                 warp::reject::reject()
             })?;
 
-            let file_name = format!("./files/{}.{}", Uuid::new_v4().to_string(), file_extension);
-            tokio::fs::write(&file_name, value).await.map_err(|e| {
+            let file_name = format!("{}.{}", Uuid::new_v4().to_string(), file_extension);
+            let file_path = format!("../files/{}", file_name);
+
+            file = file_name.clone();
+
+            tokio::fs::write(&file_path, value).await.map_err(|e| {
                 eprintln!("Error writing file : {}", e);
                 warp::reject::reject()
             })?;
+
 
             println!("created file: {}", file_name);
         }
     }
 
-    Ok("success")
+    Ok(warp::reply::json(&file))
 }
 
 async fn handle_rejection(err: Rejection) -> std::result::Result<impl Reply, Infallible> {
-    let (code, message) = if err.is_not_found() {
-        (StatusCode::NOT_FOUND, "Not Found".to_string())
+    let message = if err.is_not_found() {
+        "Not Found"
     } else if err.find::<warp::reject::PayloadTooLarge>().is_some() {
-        (StatusCode::BAD_REQUEST, "Payload too large".to_string())
+        "Payload too large"
     } else {
         eprintln!("unhandled error: {:?}", err);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Internal Server Error".to_string(),
-        )
+        "Internal Server Error"
     };
 
-    Ok(warp::reply::with_status(message, code))
+    Ok(warp::reply::json(&message))
 }
